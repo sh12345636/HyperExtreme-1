@@ -23,13 +23,17 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      # 本工程要求 compileSdk 37 / buildTools 37.0.0 / NDK 28.2.13676358 / cmake 3.22.1
-      # （见 app/build.gradle.kts），runner 预装版本不够，必须显式装。
-      - name: Android SDK 37 + NDK 28.2
+      # 本工程要求 compileSdk 37（minor 2）/ buildTools 37.0.0 / NDK 28.2.13676358 / cmake 3.22.1
+      # （见 app/build.gradle.kts 的 compileSdk / compileSdkMinor）。
+      # ⚠️ 公共 SDK 仓库里 platform 37 是**按小版本**发布的：包名是 platforms;android-37.0 / -37.1 / -37.2，
+      #    不存在 "platforms;android-37"（2026-11-19 实测：装 android-37 会报
+      #    "Failed to find package"）。compileSdkMinor = 2 ⇒ 必须装 -37.2。
+      - name: Android SDK 37.2 + NDK 28.2
         run: |
-          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null || true
-          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" \
-            "platforms;android-37" \
+          SDKM="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+          yes | "$SDKM" --licenses > /dev/null || true
+          "$SDKM" \
+            "platforms;android-37.2" \
             "build-tools;37.0.0" \
             "ndk;28.2.13676358" \
             "cmake;3.22.1"
