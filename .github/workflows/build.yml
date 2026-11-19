@@ -1,0 +1,96 @@
+name: Build APK
+
+# 构建 HyperExtreme 并把可安装的 APK 上传为 artifact（2026-11-15）。
+# 仓库无 keystore.properties 时 release 自动退回 debug 签名（见 app/build.gradle.kts），
+# 产物直接可安装；如需发布签名，把 keystore.properties 与 keystore/release.jks
+# 以 Secrets/文件形式放进仓库后，同一 workflow 会自动改用 release 签名。
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    # 钉 24.04：ubuntu-latest 已于 2026-10-19 迁到 Ubuntu 26，android-actions/setup-android@v3
+    # 在 26 上 14s 内失败（首跑日志实证）；24.04 是该 action 的久经验证环境。
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # AGP 9.x + Gradle 9.6.1 官方验证组合为 JDK 21（与同类项目 HyperChanger CI 一致）。
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      # 不用 android-actions/setup-android：本环境两连败（ubuntu-26 14s / ubuntu-24.04 6s），
+      # 改用 GitHub runner 镜像预装的 Android SDK（ANDROID_HOME 自带 cmdline-tools）。
+      # 与 app/build.gradle.kts 严格对齐：
+      #   compileSdk = 37 / buildTools 37.0.0 / ndk 28.2.13676358 / cmake 3.22.1
+      # （externalNativeBuild 要编 libhome_bridge.so，NDK + CMake 必装）
+      # 只做 licenses：platform/build-tools/ndk/cmake 全部交给 AGP 自动下载
+      # （AGP 9.x 按 gradle 声明的 compileSdk/ndkVersion/CMake 版本自动 sdkmanager 安装）。
+      # 手动 --install 在本环境 8s 内 exit1（run#3 实证），且失败现场不可见 —— 改为
+      # 把诊断写进 ::notice:: 注解，失败时 annotations 可直接读到（web_fetch 通道可用）。
+      - name: Accept SDK licenses
+        run: |
+          diag() { echo "::notice::$1"; }
+          SDKM="$(command -v sdkmanager || true)"
+          [ -n "$SDKM" ] || SDKM="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+          [ -x "$SDKM" ] || SDKM="$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager"
+          if [ ! -x "$SDKM" ]; then
+            echo "::error::sdkmanager_NOT_FOUND home=$ANDROID_HOME root=$ANDROID_SDK_ROOT"
+            exit 1
+          fi
+          yes | "$SDKM" --licenses > /dev/null 2>&1 || true
+          diag "SDKM=$SDKM | ANDROID_HOME=$ANDROID_HOME | writable=$( [ -w "$ANDROID_HOME" ] && echo yes || echo no ) | sdkmanager_ok"
+
+      # 加回 setup-gradle：接管 gradle wrapper distribution 的下载与缓存。
+      # v4/v5 裸跑 gradlew 的指纹（日志仅 2.8KB、约 2 分钟挂）与 wrapper 下载失败吻合。
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Build release APK
+        run: |
+          chmod +x gradlew
+          set -o pipefail
+          ./gradlew assembleRelease --no-daemon 2>&1 | tee /tmp/gradle.log
+          exit $?
+
+      # 失败后的独立（自身成功）step —— 实测「失败 step 内的 ::command 注解不被采集」，
+      # 必须由成功 step 把现场送进 annotations。
+      - name: Surface gradle failure
+        if: failure()
+        run: |
+          if [ -f /tmp/gradle.log ]; then
+            H=$(head -n 8 /tmp/gradle.log | tr -c '\11\12\15\40-\176' ' ' | tr '\n' '~' | cut -c1-1200)
+            T=$(tail -n 25 /tmp/gradle.log | tr -c '\11\12\15\40-\176' ' ' | tr '\n' '~' | cut -c1-3000)
+            S=$(wc -c < /tmp/gradle.log)
+            echo "::notice::DIAG size=$S"
+            echo "::notice::DIAG head=$H"
+            echo "::notice::DIAG tail=$T"
+          else
+            echo "::notice::DIAG gradle.log missing (build died before tee?)"
+          fi
+
+      # 失败也传 gradle 日志（诊断通道之二；APK 成功时同样带上）
+      - name: Upload gradle log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gradle-log-r${{ github.run_number }}
+          path: /tmp/gradle.log
+          if-no-files-found: warn
+          retention-days: 7
+
+      # 产物：app/build/outputs/apk/release/*.apk（debug 签名，可直接安装）
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: HyperExtreme-v1.0-Beta3-r${{ github.run_number }}
+          path: app/build/outputs/apk/release/*.apk
+          if-no-files-found: error
+          retention-days: 30

@@ -271,6 +271,23 @@ internal fun SpatialWallpaperDetail(state: MaskUiState) {
      * 入口请走 [enableSpatial]（它先过一道「壁纸进程可注入」的闸门）。
      */
     fun enableSpatialNow(key: String) {
+        // 功能 A/B 互斥锁 · 注入层（2026-11-19 迁移）：入口层只检查，这里再检并占位；
+        // 同步注入无 early return，函数尾释放（看门狗 5s 兜底）。
+        when (val begin = FeatureMutex.tryBeginEnable(ctx, state, FeatureMutex.Feature.A_SPATIAL)) {
+            is FeatureMutex.Begin.Denied -> {
+                AppToast.show(ctx, FeatureMutex.deniedMessage(begin))
+                return
+            }
+            is FeatureMutex.Begin.DeniedExternal -> {
+                AppToast.show(ctx, FeatureMutex.deniedMessage(begin))
+                return
+            }
+            is FeatureMutex.Begin.Busy -> {
+                AppToast.show(ctx, FeatureMutex.busyMessage())
+                return
+            }
+            is FeatureMutex.Begin.Ok -> Unit
+        }
         prefs.setSpatialActive(key)
         activeKey = key
         // 应用即置顶，但**只写顺序、不动当前列表**（2026-11-05 用户明确）：
@@ -329,6 +346,7 @@ internal fun SpatialWallpaperDetail(state: MaskUiState) {
                 if (version.usable) prefs.setSpatialWallpaperFp(version.value)
             }
         }.apply { isDaemon = true }.start()
+        FeatureMutex.endEnable()
     }
 
     /**
@@ -742,6 +760,18 @@ internal fun SpatialWallpaperDetail(state: MaskUiState) {
                                     ).show()
                                 }
                             } else {
+                                // 功能 A/B 互斥锁 · 入口层（2026-11-15 / 迁移 2026-11-19）：
+                                // 只检查不占位；真正占位在 enableSpatialNow（注入层，覆盖排队 TOCTOU）。
+                                val gate = FeatureMutex.checkOnly(
+                                    ctx, state, FeatureMutex.Feature.A_SPATIAL,
+                                )
+                                if (gate is FeatureMutex.Begin.Denied ||
+                                    gate is FeatureMutex.Begin.DeniedExternal
+                                ) {
+                                    AppToast.show(ctx, FeatureMutex.deniedMessage(gate))
+                                } else if (gate is FeatureMutex.Begin.Busy) {
+                                    AppToast.show(ctx, FeatureMutex.busyMessage())
+                                } else {
                                 // 功能冲突（三侧统一）：跳系统页会把系统壁纸换掉 ⇒ 先关对方。
                                 val other = WallpaperConflict.running(
                                     ctx, state, WallpaperChain.SPATIAL,
@@ -770,6 +800,7 @@ internal fun SpatialWallpaperDetail(state: MaskUiState) {
                                         ).show()
                                     }
                                 }
+                                }
                             }
                             // ── LSPosed：关闭方向不做互斥检查 ──
                             isActive -> {
@@ -788,14 +819,26 @@ internal fun SpatialWallpaperDetail(state: MaskUiState) {
                                 } else if (!c.hasLayers) {
                                     Toast.makeText(ctx, "请先生成深度缓存", Toast.LENGTH_SHORT).show()
                                 } else {
-                                    val other = WallpaperConflict.running(
-                                        ctx, state, WallpaperChain.SPATIAL,
+                                    // 功能 A/B 互斥锁 · 入口层（同服务模式，只检查不占位）。
+                                    val gate = FeatureMutex.checkOnly(
+                                        ctx, state, FeatureMutex.Feature.A_SPATIAL,
                                     )
-                                    if (other != null) {
-                                        conflictOther = other
-                                        showConflict = true
+                                    if (gate is FeatureMutex.Begin.Denied ||
+                                        gate is FeatureMutex.Begin.DeniedExternal
+                                    ) {
+                                        AppToast.show(ctx, FeatureMutex.deniedMessage(gate))
+                                    } else if (gate is FeatureMutex.Begin.Busy) {
+                                        AppToast.show(ctx, FeatureMutex.busyMessage())
                                     } else {
-                                        enableSpatial(c.key)
+                                        val other = WallpaperConflict.running(
+                                            ctx, state, WallpaperChain.SPATIAL,
+                                        )
+                                        if (other != null) {
+                                            conflictOther = other
+                                            showConflict = true
+                                        } else {
+                                            enableSpatial(c.key)
+                                        }
                                     }
                                 }
                             }

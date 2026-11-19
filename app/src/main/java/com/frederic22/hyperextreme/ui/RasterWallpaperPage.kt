@@ -357,6 +357,24 @@ internal fun RasterWallpaperDetail(state: MaskUiState) {
      * 入口请走 [applyGroup]（它先过一道「壁纸进程可注入」的闸门）。
      */
     fun applyGroupNow(g: RasterGroup) {
+        // 功能 A/B 互斥锁 · 注入层（2026-11-19 迁移）：入口只检查，这里再检并占位 ——
+        // 覆盖 applyWhenReady 排队期间对方被开启的 TOCTOU；有 early return，故用 try/finally。
+        when (val begin = FeatureMutex.tryBeginEnable(ctx, state, FeatureMutex.Feature.B_RASTER)) {
+            is FeatureMutex.Begin.Denied -> {
+                AppToast.show(ctx, FeatureMutex.deniedMessage(begin))
+                return
+            }
+            is FeatureMutex.Begin.DeniedExternal -> {
+                AppToast.show(ctx, FeatureMutex.deniedMessage(begin))
+                return
+            }
+            is FeatureMutex.Begin.Busy -> {
+                AppToast.show(ctx, FeatureMutex.busyMessage())
+                return
+            }
+            is FeatureMutex.Begin.Ok -> Unit
+        }
+        try {
         haptic()
         if (mountMode == RASTER_MOUNT_SERVICE) {
             // **服务模式只写 target 文件**（真值在壁纸进程），不落 `prefs.rasterActiveId`。
@@ -412,6 +430,9 @@ internal fun RasterWallpaperDetail(state: MaskUiState) {
                 Toast.LENGTH_LONG,
             ).show()
         }
+        } finally {
+            FeatureMutex.endEnable()
+        }
     }
 
     /**
@@ -428,16 +449,27 @@ internal fun RasterWallpaperDetail(state: MaskUiState) {
      */
     fun applyGroup(g: RasterGroup) {
         if (mountMode != RASTER_MOUNT_SERVICE && g.id == activeId) return
-        val other = WallpaperConflict.running(ctx, state, WallpaperChain.RASTER)
-        if (other != null) {
-            conflictOther = other
-            showConflict = true
-            return
-        }
-        if (mountMode == RASTER_MOUNT_SERVICE) {
-            applyGroupNow(g)
+        // 功能 A/B 互斥锁 · 入口层（2026-11-15 / 迁移 2026-11-19）：只检查不占位；
+        // 真正占位在 applyGroupNow（注入层），覆盖 applyWhenReady 排队期间的 TOCTOU。
+        val gate = FeatureMutex.checkOnly(ctx, state, FeatureMutex.Feature.B_RASTER)
+        if (gate is FeatureMutex.Begin.Denied ||
+            gate is FeatureMutex.Begin.DeniedExternal
+        ) {
+            AppToast.show(ctx, FeatureMutex.deniedMessage(gate))
+        } else if (gate is FeatureMutex.Begin.Busy) {
+            AppToast.show(ctx, FeatureMutex.busyMessage())
         } else {
-            WallpaperProc.applyWhenReady(ctx) { applyGroupNow(g) }
+            val other = WallpaperConflict.running(ctx, state, WallpaperChain.RASTER)
+            if (other != null) {
+                conflictOther = other
+                showConflict = true
+                return
+            }
+            if (mountMode == RASTER_MOUNT_SERVICE) {
+                applyGroupNow(g)
+            } else {
+                WallpaperProc.applyWhenReady(ctx) { applyGroupNow(g) }
+            }
         }
     }
 
