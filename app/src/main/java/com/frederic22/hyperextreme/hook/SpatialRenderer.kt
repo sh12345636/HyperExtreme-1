@@ -2171,9 +2171,9 @@ internal object SpatialRenderer {
                 )
             }.getOrNull()
             syncBlurMethod = runCatching {
-                Class.forName(
-                    "com.android.keyguard.panel.KeyguardPanelViewController", false, cl,
-                ).getMethod(
+                (HostClasses.resolve(
+                    "com.android.keyguard.panel.KeyguardPanelViewController", "setWallpaperSyncBlur", cl,
+                ) ?: error("无宿主类")).getMethod(
                     "setWallpaperSyncBlur",
                     Float::class.javaPrimitiveType, android.view.View::class.java,
                 )

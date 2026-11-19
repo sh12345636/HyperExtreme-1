@@ -125,9 +125,10 @@ internal object SpatialForegroundHider {
     }
 
     fun install(module: XposedModule, loader: ClassLoader): Boolean {
-        val cls = runCatching { Class.forName(CLS_PANEL, false, loader) }.getOrNull()
+        // OS3 实测：updateKeyguardElementsVisibility 在 keyguard/injector/KeyguardPanelViewInjector。
+        val cls = HostClasses.resolve(CLS_PANEL, METHOD, loader)
         if (cls == null) {
-            log("未找到 $CLS_PANEL")
+            log("未找到 $CLS_PANEL（且无替代类），撤前景层在本版本停用")
             return false
         }
         val method = cls.declaredMethods.firstOrNull {

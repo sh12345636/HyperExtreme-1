@@ -432,6 +432,8 @@ internal fun RasterGroupSheet(
                 "光栅壁纸 · 景深主体",
                 buildList {
                     add("组 ${g.id}，目标 ${targets.size} 张（新算 $fresh / 缓存 $cached / 失败 $failed）")
+                    // 版本口径（2026-11-19）：排查"抠图为空"时第一眼要看到装的是哪个 AICR。
+                    add(com.frederic22.hyperextreme.aicr.AicrCapability.describeVersion(ctx))
                     notes.forEach { (n, v) -> add("$n → $v") }
                     if (waited > 0) add("等待 AI 模型合计 ${waited / 1000} 秒")
                 },

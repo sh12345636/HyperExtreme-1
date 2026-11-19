@@ -79,9 +79,10 @@ internal object SpatialAod {
     }
 
     fun install(module: XposedModule, loader: ClassLoader): Boolean {
-        val cls = runCatching { Class.forName(CLS_PANEL, false, loader) }.getOrNull()
+        // OS3 实测：doWallpaperBlackAnim 在 shade/MiuiNotificationPanelViewController。
+        val cls = HostClasses.resolve(CLS_PANEL, METHOD_BLACK, loader)
         if (cls == null) {
-            log("未找到 $CLS_PANEL")
+            log("未找到 $CLS_PANEL（且无替代类），AOD 压暗在本版本停用")
             return false
         }
         val m = cls.declaredMethods.firstOrNull { it.name == METHOD_BLACK } ?: run {

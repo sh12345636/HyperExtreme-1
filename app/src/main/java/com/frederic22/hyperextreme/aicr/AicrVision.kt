@@ -136,6 +136,13 @@ internal object AicrVision {
      * binder 通道：原来的那条，跨应用 bind —— 部分设备上 `resolveService` 直接返回 null。
      */
     private fun runFd(ctx: Context, input: File, startAt: Long, deleteAfter: Boolean): Result {
+        // 短路（2026-11-19）：本机 AICR 已被判为"能绑上但回空结果"时，
+        // 不再每组白等 广播 8s + binder 8s。状态由 [AicrCapability] 维护，
+        // 任何一次成功都会自动清零 —— 升级引擎或换图后不必重启。
+        AicrCapability.unavailableReason()?.let { reason ->
+            if (deleteAfter) runCatching { input.delete() }
+            return fail(startAt, reason, 0, "short-circuit")
+        }
         // ① 广播（主通道）
         val (viaBroadcast, bcError) = runBroadcast(ctx, input, startAt)
         if (viaBroadcast != null) {
@@ -143,6 +150,10 @@ internal object AicrVision {
             return viaBroadcast
         }
 
+        // 广播那条的真实原因必须带着走（2026-11-19）——
+        // 原来只有"binder 也绑不上"时才拼它，一旦 binder 走到"返回空位图"，
+        // 广播为什么失败就被覆盖掉了，run_log 里两条原因一模一样，等于没信息。
+        val bc = bcError?.let { "广播通道：$it；" }.orEmpty()
         // ② binder（托底）
         val conn = connect(ctx, 8000)
             ?: return fail(
@@ -160,7 +171,7 @@ internal object AicrVision {
             waited = System.currentTimeMillis() - waitStart
             Log.i(TAG, "plugin: status=$status binder=$plugin waited=${waited}ms")
             if (plugin == null) {
-                return fail(startAt, "getPluginBinder 返回空（${AicrProtocol.statusText(status)}）", waited, "binder")
+                return fail(startAt, "${bc}getPluginBinder 返回空（${AicrProtocol.statusText(status)}）", waited, "binder")
             }
             if (status != AicrProtocol.STATUS_OK) {
                 return fail(
@@ -178,8 +189,19 @@ internal object AicrVision {
             val bitmap = AicrProtocol.segmentByFd(plugin, pfd!!)?.bitmaps?.firstOrNull()
             val cost = System.currentTimeMillis() - startAt
             if (bitmap == null) {
-                return fail(startAt, "服务返回空位图", waited, "binder")
+                // 服务回 OK 但没有位图 —— 与"插件未就绪"是两回事，日志里必须分开。
+                // 连续两次就把本机这条路判死（见 AicrCapability），避免每组图白等两个 8s。
+                val tripped = AicrCapability.noteEmpty(ctx)
+                val hint = AicrCapability.unavailableReason().orEmpty()
+                return fail(
+                    startAt,
+                    "${bc}服务返回空位图（${AicrCapability.describeVersion(ctx)}，" +
+                        "plugin 已就绪，等 ${waited}ms）" + if (tripped) "。$hint" else "",
+                    waited,
+                    "binder",
+                )
             }
+            AicrCapability.noteSuccess()
             val mask = deriveMask(bitmap)
             Log.i(TAG, "ok=${bitmap.width}x${bitmap.height} cost=${cost}ms")
             return Result(
@@ -287,6 +309,7 @@ internal object AicrVision {
             if (png == null || png.isEmpty()) return null to "广播：结果文件为空"
             val bmp = runCatching { BitmapFactory.decodeByteArray(png, 0, png.size) }.getOrNull()
                 ?: return null to "广播：结果解码失败"
+            AicrCapability.noteSuccess()
             val mask = deriveMask(bmp)
             val cost = System.currentTimeMillis() - startAt
             Log.i(TAG, "ok(broadcast)=${bmp.width}x${bmp.height} cost=${cost}ms")

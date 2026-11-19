@@ -112,9 +112,10 @@ internal object SpatialUnlockFade {
      * 方法名即语义（unlock dismiss）⇒ 启动 / 灭屏都不会走它，不会误触发。
      */
     private fun installDismissAnimHook(module: XposedModule, loader: ClassLoader): Boolean {
-        val cls = runCatching { Class.forName(CLS_PANEL, false, loader) }.getOrNull()
+        // OS3 实测：startUnlockKeyguardDismissAnim 在 shade/MiuiNotificationPanelViewController。
+        val cls = HostClasses.resolve(CLS_PANEL, METHOD_DISMISS_ANIM, loader)
         if (cls == null) {
-            log("未找到 $CLS_PANEL（前景主体改由退场动画起点触发）")
+            log("未找到 $CLS_PANEL（且无替代类；前景主体改由退场动画起点触发）")
             return false
         }
         val m = cls.declaredMethods.firstOrNull { it.name == METHOD_DISMISS_ANIM }

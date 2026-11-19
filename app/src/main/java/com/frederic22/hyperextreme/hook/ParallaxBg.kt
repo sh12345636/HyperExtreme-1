@@ -549,37 +549,46 @@ internal object ParallaxBg {
      * 天然跟随系统：ratio=0 自动清除、归零 / 复位不用另写代码；只在值变化时动作。
      */
     private fun installBlurSyncHook(module: XposedModule, loader: ClassLoader): Boolean = runCatching {
-        val clazz = Class.forName(CLS_PANEL_CONTROLLER, false, loader)
-        val method = clazz.getDeclaredMethod(
-            "doBlurAndDim",
-            Float::class.javaPrimitiveType,
-            Boolean::class.javaPrimitiveType,
-            Boolean::class.javaPrimitiveType,
-            Boolean::class.javaPrimitiveType,
-        )
-        module.hook(method).intercept(object : XposedInterface.Hooker {
-            override fun intercept(chain: XposedInterface.Chain): Any? {
-                val result = chain.proceed()
-                // proceed 后字段已是本帧的最终值；只在变化时动作（幂等、轻量）。
-                runCatching { onBlurRatioMaybeChanged(chain.getThisObject()) }
-                    .onFailure { HookRuntime.log("视差壁纸效果：模糊同步处理异常：$it") }
-                // 模糊探针（probe=3 记参数 / probe=4 把 100×ratio 设到壁纸 leash 上）
-                runCatching {
-                    val controller = chain.getThisObject()
-                    val args = chain.getArgs()
-                    val depth = depthEffectOf(controller)
-                    val fg = foregroundLayerOf(controller)
-                    SpatialRenderer.onKeyguardBlurArgs(args, depth, fg)
-                    // **光栅壁纸同一个处境**（2026-11-04）：也挂在壁纸 leash 上、也是兄弟层，
-                    // 景深关时系统同样不会糊它。转发到 RasterRenderer，内部自己判在不在跑、
-                    // 景深开关、是否解锁退场；复用同一份反射缓存与日志。
-                    RasterRenderer.onKeyguardBlurArgs(args, depth, fg)
-                }.onFailure { HookRuntime.log("SPATIAL 探针：doBlurAndDim 处理异常：$it") }
-                return result
-            }
-        })
-        HookRuntime.log("视差壁纸效果：已挂连续模糊同步点（doBlurAndDim）")
-        true
+        // 跨版本（2026-11-19，HyperOS 3 适配）：
+        //   * 类：OS4 在 keyguard/panel/KeyguardPanelViewController，
+        //         OS3 实测在 shade/MiuiNotificationPanelViewController（见 [HostClasses]）；
+        //   * 签名：OS4 是 doBlurAndDim(float,boolean,boolean,boolean)，
+        //         OS3 只有 doBlurAndDim(float,boolean,boolean) —— 硬取 4 参在 OS3 必抛
+        //         NoSuchMethodException，整条模糊同步直接失效。
+        // 所以这里按名字取**全部重载**逐个挂：arity 变了也不影响，intercept 内本来就不用参数表，
+        // 只读 proceed 之后的 keyguardBlurRatio 与探针参数。
+        val clazz = HostClasses.resolve(CLS_PANEL_CONTROLLER, "doBlurAndDim", loader)
+            ?: error("未找到 doBlurAndDim 的宿主类")
+        val methods = HostClasses.overloads(clazz, "doBlurAndDim")
+        if (methods.isEmpty()) error("${clazz.name} 里没有 doBlurAndDim")
+        var hooked = 0
+        for (method in methods) {
+            method.isAccessible = true
+            module.hook(method).intercept(object : XposedInterface.Hooker {
+                override fun intercept(chain: XposedInterface.Chain): Any? {
+                    val result = chain.proceed()
+                    // proceed 后字段已是本帧的最终值；只在变化时动作（幂等、轻量）。
+                    runCatching { onBlurRatioMaybeChanged(chain.getThisObject()) }
+                        .onFailure { HookRuntime.log("视差壁纸效果：模糊同步处理异常：$it") }
+                    // 模糊探针（probe=3 记参数 / probe=4 把 100×ratio 设到壁纸 leash 上）
+                    runCatching {
+                        val controller = chain.getThisObject()
+                        val args = chain.getArgs()
+                        val depth = depthEffectOf(controller)
+                        val fg = foregroundLayerOf(controller)
+                        SpatialRenderer.onKeyguardBlurArgs(args, depth, fg)
+                        // **光栅壁纸同一个处境**（2026-11-04）：也挂在壁纸 leash 上、也是兄弟层，
+                        // 景深关时系统同样不会糊它。转发到 RasterRenderer，内部自己判在不在跑、
+                        // 景深开关、是否解锁退场；复用同一份反射缓存与日志。
+                        RasterRenderer.onKeyguardBlurArgs(args, depth, fg)
+                    }.onFailure { HookRuntime.log("SPATIAL 探针：doBlurAndDim 处理异常：$it") }
+                    return result
+                }
+            })
+            hooked++
+        }
+        HookRuntime.log("视差壁纸效果：已挂连续模糊同步点（doBlurAndDim ×$hooked，类=${clazz.name}）")
+        hooked > 0
     }.getOrElse {
         HookRuntime.log("视差壁纸效果：挂连续模糊同步点失败：$it")
         false

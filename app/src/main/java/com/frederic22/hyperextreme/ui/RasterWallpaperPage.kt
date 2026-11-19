@@ -437,6 +437,17 @@ internal fun RasterWallpaperDetail(state: MaskUiState) {
         if (mountMode == RASTER_MOUNT_SERVICE) {
             applyGroupNow(g)
         } else {
+            // 激活门（2026-11-19，与空间页对齐）：LSPosed 链全靠 App 侧 su setprop，
+            // 未激活 / 无 root 时 push 只打一条 Log.w（RasterFlag.kt:98）——
+            // 界面有响应、壁纸不变、零提示。这里先拦，给一句说得清的话。
+            if (!state.fullyActivated) {
+                Toast.makeText(
+                    ctx,
+                    "以LSPosed模式运行时需要激活模块，请先激活（无Root可改用“系统壁纸服务”）",
+                    Toast.LENGTH_LONG,
+                ).show()
+                return
+            }
             WallpaperProc.applyWhenReady(ctx) { applyGroupNow(g) }
         }
     }
