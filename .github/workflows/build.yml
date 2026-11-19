@@ -86,19 +86,26 @@ jobs:
           if-no-files-found: warn
           retention-days: 7
 
-      # 产物自校验（下载域对本机不可达时，用 annotations 取证）：
-      # size / sha256 / versionName / 互锁类是否编入 / 签名条目数 —— 全部经 ::notice:: 进注解。
+      # 产物自校验（下载域对本机不可达时，用 annotations 取证）。
+      # 注意三点：① release 开 R8 ⇒ 类名被混淆，不能用类名 grep 判「是否编入」，
+      # 改用 mapping.txt 映射行；② 二进制 XML 是 UTF-16，版本串用 aapt2 读；
+      # ③ debug 签名走 v2/v3，没有 META-INF/*.RSA/SF（v1），改用 apksigner 验。
       - name: Verify built APK
         if: success()
         run: |
+          BT=$(ls -d "$ANDROID_HOME"/build-tools/* 2>/dev/null | sort -V | tail -1)
           APK=$(ls app/build/outputs/apk/release/*.apk | head -1)
           echo "::notice::APK_PATH=$APK"
           echo "::notice::APK_SIZE=$(stat -c%s "$APK") APK_SHA256=$(sha256sum "$APK" | cut -d' ' -f1)"
-          V=$(unzip -p "$APK" AndroidManifest.xml | strings | grep -oE "1\.0 Beta[0-9]" | head -1)
-          C=$(unzip -p "$APK" classes.dex | strings | grep -c "FeatureMutex" || true)
-          N=$(unzip -p "$APK" classes.dex | strings | grep -c "ModuleMutex" || true)
-          S=$(unzip -l "$APK" | grep -cE "META-INF/.*\.(RSA|SF)" || true)
-          echo "::notice::APK_VERIFIED ver=$V feature_mutex_refs=$C module_mutex_refs=$N sig_entries=$S"
+          BADGE=$("$BT/aapt2" dump badging "$APK" 2>/dev/null | grep -E "^package:" | head -1)
+          echo "::notice::APK_BADGING $BADGE"
+          SIG=$("$BT/apksigner" verify --print-certs "$APK" 2>/dev/null | grep -E "Signer #1 (CN|key algorithm)|Number of signers" | head -3 | tr '\n' ' ')
+          echo "::notice::APK_SIGN $SIG"
+          M=app/build/outputs/mapping/release/mapping.txt
+          if [ -f "$M" ]; then
+            echo "::notice::MAPPING_LINES=$(wc -l < "$M") FMUTEX_MAPPED=$(grep -c 'FeatureMutex' "$M" || true) MMUTEX_MAPPED=$(grep -c 'ModuleMutex' "$M" || true)"
+            grep -E "FeatureMutex|ModuleMutex" "$M" | head -4 | tr '\n' '|' | sed 's/^/::notice::MAPPING_SAMPLE /'
+          fi
 
       # 产物：app/build/outputs/apk/release/*.apk（debug 签名，可直接安装）
       - name: Upload APK artifact
