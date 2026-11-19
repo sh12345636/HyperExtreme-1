@@ -44,7 +44,10 @@ jobs:
           gradle-version: '9.6.1'
 
       - name: assembleRelease
-        run: ./gradlew :app:assembleRelease --stacktrace --no-daemon
+        run: |
+          # 上游仓库里 gradlew 是 100644（Windows 提交），直接 ./gradlew 会 Permission denied(126)。
+          chmod +x gradlew
+          ./gradlew :app:assembleRelease --stacktrace --no-daemon
 
       - name: 产物摘要
         run: |
