@@ -90,7 +90,7 @@ jobs:
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
-          name: HyperExtreme-v1.0-Beta3-r${{ github.run_number }}
+          name: HyperExtreme-r${{ github.run_number }}-${{ github.sha }}
           path: app/build/outputs/apk/release/*.apk
           if-no-files-found: error
           retention-days: 30
